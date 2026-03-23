@@ -1,0 +1,132 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  RAPIDGZIP_RS_REF: split-03-rapidgzip-rs-windows-arm64
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: rapidgzip-cli-linux-x86_64
+            archive: rapidgzip-cli-linux-x86_64.tar.gz
+            binary: rapidgzip-cli
+          - os: ubuntu-24.04-arm
+            artifact: rapidgzip-cli-linux-arm64
+            archive: rapidgzip-cli-linux-arm64.tar.gz
+            binary: rapidgzip-cli
+          - os: macos-15-intel
+            artifact: rapidgzip-cli-macos-x86_64
+            archive: rapidgzip-cli-macos-x86_64.tar.gz
+            binary: rapidgzip-cli
+          - os: macos-15
+            artifact: rapidgzip-cli-macos-arm64
+            archive: rapidgzip-cli-macos-arm64.tar.gz
+            binary: rapidgzip-cli
+          - os: windows-latest
+            artifact: rapidgzip-cli-windows-x86_64
+            archive: rapidgzip-cli-windows-x86_64.zip
+            binary: rapidgzip-cli.exe
+          - os: windows-11-arm
+            artifact: rapidgzip-cli-windows-arm64
+            archive: rapidgzip-cli-windows-arm64.zip
+            binary: rapidgzip-cli.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout rapidgzip-cli
+        uses: actions/checkout@v4
+        with:
+          path: rapidgzip-cli
+
+      - name: Checkout rapidgzip-rs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/rapidgzip-rs
+          ref: ${{ env.RAPIDGZIP_RS_REF }}
+          path: rapidgzip-rs
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y cmake build-essential zlib1g-dev nasm
+              ;;
+            macOS)
+              brew install -q nasm
+              ;;
+            Windows)
+              choco install -y nasm
+              ;;
+          esac
+
+      - name: Build release binary
+        working-directory: rapidgzip-cli
+        run: cargo build --release
+
+      - name: Stage package contents
+        shell: bash
+        run: |
+          set -euxo pipefail
+          rm -rf package
+          mkdir -p package
+          cp "rapidgzip-cli/target/release/${{ matrix.binary }}" "package/${{ matrix.binary }}"
+          cp rapidgzip-cli/README.md package/README.md
+          cp rapidgzip-cli/SECURITY.md package/SECURITY.md
+
+      - name: Create tar.gz archive
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tar -C package -czf "${{ matrix.archive }}" .
+
+      - name: Create zip archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path package/* -DestinationPath "${{ matrix.archive }}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.archive }}
+
+      - name: Ensure GitHub release exists
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}"               --verify-tag               --title "${GITHUB_REF_NAME}"               --generate-notes
+          fi
+
+      - name: Upload release asset
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+          gh release upload "${GITHUB_REF_NAME}" "${{ matrix.archive }}" --clobber

@@ -1,0 +1,72 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  RAPIDGZIP_RS_REF: split-03-rapidgzip-rs-windows-arm64
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            kind: test
+          - os: ubuntu-24.04-arm
+            kind: test
+          - os: macos-15-intel
+            kind: build
+          - os: macos-15
+            kind: build
+          - os: windows-latest
+            kind: build
+          - os: windows-11-arm
+            kind: build
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout rapidgzip-cli
+        uses: actions/checkout@v4
+        with:
+          path: rapidgzip-cli
+
+      - name: Checkout rapidgzip-rs
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/rapidgzip-rs
+          ref: ${{ env.RAPIDGZIP_RS_REF }}
+          path: rapidgzip-rs
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y cmake build-essential zlib1g-dev nasm
+              ;;
+            macOS)
+              brew install -q nasm
+              ;;
+            Windows)
+              choco install -y nasm
+              ;;
+          esac
+
+      - name: Run CLI tests
+        if: matrix.kind == 'test'
+        working-directory: rapidgzip-cli
+        run: cargo test
+
+      - name: Smoke build release binary
+        if: matrix.kind == 'build'
+        working-directory: rapidgzip-cli
+        run: cargo build --release
