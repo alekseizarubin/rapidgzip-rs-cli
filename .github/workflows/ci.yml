@@ -16,13 +16,13 @@ jobs:
           - os: ubuntu-24.04-arm
             kind: test
           - os: macos-15-intel
-            kind: build
+            kind: test
           - os: macos-15
-            kind: build
+            kind: test
           - os: windows-latest
-            kind: build
+            kind: test
           - os: windows-11-arm
-            kind: build
+            kind: test
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -51,9 +51,4 @@ jobs:
           esac
 
       - name: Run CLI tests
-        if: matrix.kind == 'test'
         run: cargo test
-
-      - name: Smoke build release binary
-        if: matrix.kind == 'build'
-        run: cargo build --release

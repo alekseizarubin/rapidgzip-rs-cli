@@ -96,11 +96,8 @@ fn probe_size_and_range_support(url: &str) -> Result<u64> {
         if let Some(size) = parse_content_range_total(&range_resp) {
             return Ok(size);
         }
-        if let Some(size) = parse_content_length(&range_resp) {
-            return Ok(size);
-        }
         return Err(anyhow!(
-            "Server returned HTTP 206 but did not provide Content-Range or Content-Length"
+            "Server returned HTTP 206 but did not provide a valid Content-Range header"
         ));
     }
 

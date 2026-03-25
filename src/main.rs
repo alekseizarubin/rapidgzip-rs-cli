@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, ValueEnum};
 use rapidgzip::{IoReadMode, Reader, ReaderBuilder};
-use std::fs::{File, OpenOptions};
 #[cfg(not(unix))]
 use std::io::BufWriter;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -10,7 +9,7 @@ use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use tempfile::NamedTempFile;
+use tempfile::{Builder as TempFileBuilder, NamedTempFile};
 use url::Url;
 
 mod http_reader;
@@ -161,6 +160,11 @@ enum OutputTarget {
     Stdout,
     File(PathBuf),
     None,
+}
+
+struct PreparedOutputFile {
+    final_path: PathBuf,
+    temp_file: NamedTempFile,
 }
 
 struct InputReader {
@@ -334,25 +338,64 @@ fn open_input(cli: &Cli, builder: &ReaderBuilder, input_kind: &InputKind) -> Res
     }
 }
 
-fn create_output_file(path: &Path, force: bool) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true);
-    if force {
-        options.create(true).truncate(true);
-    } else {
-        options.create_new(true);
+fn prepare_output_file(path: &Path, force: bool) -> Result<PreparedOutputFile> {
+    if !force && path.exists() {
+        anyhow::bail!(
+            "Output file already exists: {}. Pass --force to overwrite it",
+            path.display()
+        );
     }
 
-    options.open(path).with_context(|| {
-        if !force && path.exists() {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let temp_file = TempFileBuilder::new()
+        .prefix(".rapidgzip-rs-cli.")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| {
             format!(
-                "Output file already exists: {}. Pass --force to overwrite it",
+                "Failed to create temporary output file next to {}",
                 path.display()
             )
-        } else {
-            format!("Failed to create output file: {}", path.display())
-        }
+        })?;
+
+    Ok(PreparedOutputFile {
+        final_path: path.to_path_buf(),
+        temp_file,
     })
+}
+
+fn finalize_output_file(mut prepared: PreparedOutputFile, force: bool) -> Result<()> {
+    prepared
+        .temp_file
+        .as_file_mut()
+        .sync_all()
+        .with_context(|| {
+            format!(
+                "Failed to flush temporary output file before finalizing {}",
+                prepared.final_path.display()
+            )
+        })?;
+
+    if force && prepared.final_path.exists() {
+        std::fs::remove_file(&prepared.final_path).with_context(|| {
+            format!(
+                "Failed to replace existing output file: {}",
+                prepared.final_path.display()
+            )
+        })?;
+    }
+
+    prepared
+        .temp_file
+        .persist(&prepared.final_path)
+        .map_err(|error| {
+            anyhow::Error::new(error.error).context(format!(
+                "Failed to move temporary output file into place: {}",
+                prepared.final_path.display()
+            ))
+        })?;
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -424,6 +467,11 @@ fn main() -> Result<()> {
         log_verbose(&cli, format!(">> Output file: {}", path.display()));
     }
 
+    let mut prepared_output = match &output_target {
+        OutputTarget::File(path) => Some(prepare_output_file(path, cli.force)?),
+        OutputTarget::Stdout | OutputTarget::None => None,
+    };
+
     let mut total_bytes = 0u64;
 
     if cli.count {
@@ -478,16 +526,19 @@ fn main() -> Result<()> {
 
         #[cfg(unix)]
         {
-            match output_target {
-                OutputTarget::File(ref path) => {
-                    let file = create_output_file(path, cli.force)?;
+            match &output_target {
+                OutputTarget::File(_) => {
+                    let prepared = prepared_output
+                        .as_ref()
+                        .expect("file output should be prepared before decode");
+                    let file_fd = prepared.temp_file.as_file().as_raw_fd();
                     loop {
                         if is_cancelled() {
                             break;
                         }
                         let n = input
                             .reader
-                            .read_to_fd(file.as_raw_fd(), FAST_PATH_READ_SIZE)
+                            .read_to_fd(file_fd, FAST_PATH_READ_SIZE)
                             .with_context(|| "Failed to write decompressed data")?;
                         if n == 0 {
                             break;
@@ -518,49 +569,79 @@ fn main() -> Result<()> {
 
         #[cfg(not(unix))]
         {
-            let mut out_writer: Box<dyn Write> = match output_target {
-                OutputTarget::File(ref path) => Box::new(BufWriter::with_capacity(
-                    STREAM_BUFFER_SIZE,
-                    create_output_file(path, cli.force)?,
-                )),
-                OutputTarget::Stdout => Box::new(io::stdout()),
-                OutputTarget::None => unreachable!("output target is validated before decode"),
-            };
-
-            let mut buffer = vec![0u8; STREAM_BUFFER_SIZE];
-            loop {
-                if is_cancelled() {
-                    break;
-                }
-                let n = input
-                    .read(&mut buffer)
-                    .with_context(|| "Failed to read compressed data")?;
-                if n == 0 {
-                    break;
-                }
-                if let Err(error) = out_writer.write_all(&buffer[..n]) {
-                    if is_cancelled() {
-                        break;
+            match &output_target {
+                OutputTarget::File(_) => {
+                    let prepared = prepared_output
+                        .as_mut()
+                        .expect("file output should be prepared before decode");
+                    let mut out_writer = BufWriter::with_capacity(
+                        STREAM_BUFFER_SIZE,
+                        prepared.temp_file.as_file_mut(),
+                    );
+                    let mut buffer = vec![0u8; STREAM_BUFFER_SIZE];
+                    loop {
+                        if is_cancelled() {
+                            break;
+                        }
+                        let n = input
+                            .read(&mut buffer)
+                            .with_context(|| "Failed to read compressed data")?;
+                        if n == 0 {
+                            break;
+                        }
+                        if let Err(error) = out_writer.write_all(&buffer[..n]) {
+                            if is_cancelled() {
+                                break;
+                            }
+                            return Err(error).with_context(|| "Failed to write decompressed data");
+                        }
+                        total_bytes += n as u64;
                     }
-                    return Err(error).with_context(|| "Failed to write decompressed data");
+                    if !is_cancelled() {
+                        out_writer
+                            .flush()
+                            .with_context(|| "Failed to flush output buffer")?;
+                    }
                 }
-                total_bytes += n as u64;
-            }
-            if !is_cancelled() {
-                out_writer
-                    .flush()
-                    .with_context(|| "Failed to flush output buffer")?;
+                OutputTarget::Stdout => {
+                    let mut out_writer = BufWriter::with_capacity(STREAM_BUFFER_SIZE, io::stdout());
+                    let mut buffer = vec![0u8; STREAM_BUFFER_SIZE];
+                    loop {
+                        if is_cancelled() {
+                            break;
+                        }
+                        let n = input
+                            .read(&mut buffer)
+                            .with_context(|| "Failed to read compressed data")?;
+                        if n == 0 {
+                            break;
+                        }
+                        if let Err(error) = out_writer.write_all(&buffer[..n]) {
+                            if is_cancelled() {
+                                break;
+                            }
+                            return Err(error).with_context(|| "Failed to write decompressed data");
+                        }
+                        total_bytes += n as u64;
+                    }
+                    if !is_cancelled() {
+                        out_writer
+                            .flush()
+                            .with_context(|| "Failed to flush output buffer")?;
+                    }
+                }
+                OutputTarget::None => unreachable!("output target is validated before decode"),
             }
         }
     }
 
     if is_cancelled() {
-        log_info(&cli, ">> Operation cancelled. Incomplete output may have been written.");
-        if let OutputTarget::File(ref path) = output_target {
-            log_info(&cli, format!(">> Removing incomplete output file: {:?}", path));
-            let _ = std::fs::remove_file(path);
-        }
+        log_info(&cli, ">> Operation cancelled. Temporary output will be discarded.");
         std::process::exit(1);
+    }
+
+    if let Some(prepared) = prepared_output.take() {
+        finalize_output_file(prepared, cli.force)?;
     }
 
     let duration = start_time.elapsed();
