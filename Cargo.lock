@@ -86,6 +86,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bytecount"
+version = "0.6.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
+
+[[package]]
 name = "bytes"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -594,16 +600,19 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 [[package]]
 name = "rapidgzip"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca403c1797d5953b754cde83fb2c30cc29b25e240ab34d87735ae02f68e5863"
 dependencies = [
  "rapidgzip-sys",
  "thiserror",
 ]
 
 [[package]]
-name = "rapidgzip-cli"
+name = "rapidgzip-rs-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytecount",
  "clap",
  "ctrlc",
  "flate2",
@@ -616,6 +625,8 @@ dependencies = [
 [[package]]
 name = "rapidgzip-sys"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "46a3154f1b8c9cff0c3e57687be36b2eaef7424e5513ab4b74f0b46e18bcb6b1"
 dependencies = [
  "cc",
  "cmake",

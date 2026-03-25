@@ -1,21 +1,29 @@
 [package]
-name = "rapidgzip-cli"
+name = "rapidgzip-rs-cli"
 version = "0.1.0"
 edition = "2021"
-authors = ["Alex"]
+rust-version = "1.82"
 description = "Cross-platform command-line decompressor built on top of rapidgzip-rs"
 readme = "README.md"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/alekseizarubin/rapidgzip-rs-cli"
+homepage = "https://github.com/alekseizarubin/rapidgzip-rs-cli"
+keywords = ["gzip", "bgzf", "decompression", "cli", "parallel"]
+categories = ["command-line-utilities", "compression"]
+
+[[bin]]
+name = "rapidgzip-rs-cli"
+path = "src/main.rs"
 
 [dependencies]
-# Temporary staging dependency. Switch to crates.io or a pinned public git tag
-# before the first public GitHub release of this repository.
-rapidgzip = { path = "../rapidgzip-rs/crates/rapidgzip" }
+rapidgzip = "0.1.0"
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 url = "2.5.8"
 ureq = "3.3.0"
 ctrlc = "3.5.2"
 tempfile = "3.13"
+bytecount = "0.6"
 
 [dev-dependencies]
 flate2 = "1.0"

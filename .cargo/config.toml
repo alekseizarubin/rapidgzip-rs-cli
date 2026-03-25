@@ -1,2 +1,3 @@
 [target.x86_64-unknown-linux-gnu]
+# Keep GNU/Linux release linking consistent with the native rapidgzip backend.
 rustflags = ["-Clinker-features=-lld"]

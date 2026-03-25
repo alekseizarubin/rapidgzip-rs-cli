@@ -1,19 +1,16 @@
 # Contributing
 
-`rapidgzip-cli` is the user-facing command-line layer for the `rapidgzip`
+`rapidgzip-rs-cli` is the user-facing command-line layer for the `rapidgzip`
 stack.
 
-## Development Layout
+## Build Requirements
 
-Current staging assumes a sibling checkout of `rapidgzip-rs`:
+Local development currently requires:
 
-```text
-rapidgzip-publication/
-├── rapidgzip-rs/
-└── rapidgzip-cli/
-```
-
-The CLI currently depends on `../rapidgzip-rs/crates/rapidgzip`.
+- a current Rust toolchain
+- `cmake`
+- `nasm`
+- on Linux, standard C/C++ build tooling and zlib development headers
 
 ## Typical Validation
 
@@ -22,11 +19,14 @@ cargo test
 cargo build --release
 ```
 
+## Scope Rules
+
+This repository owns the user-facing CLI behavior, documentation, packaging,
+and release automation.
+
 When changing behavior that affects throughput, stdin handling, HTTP reads, or
 index import/export, document the expected user-visible behavior in the pull
 request.
-
-## Scope Rules
 
 Changes that touch native decoding internals, C++ bridge code, or upstream
 vendor policy belong in `rapidgzip-rs` unless they are strictly packaging work

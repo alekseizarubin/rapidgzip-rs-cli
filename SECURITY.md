@@ -1,13 +1,14 @@
 # Security Policy
 
-This repository is still in pre-publication staging.
+Please use GitHub private vulnerability reporting for security-sensitive
+issues in this repository.
 
-Until the public GitHub repositories exist, report security-sensitive issues
-privately to the maintainers instead of opening a public issue.
+This policy assumes that private vulnerability reporting is enabled for the
+GitHub repository.
 
-When reporting a problem, include:
+Include:
 
 - affected command or usage pattern
-- input source type (local file, stdin, or HTTP)
+- input source type such as local file, stdin, or HTTP
 - platform and architecture
-- whether the issue is reproducible with the current `rapidgzip-rs` baseline
+- whether the issue reproduces with the current `rapidgzip-rs` release

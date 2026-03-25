@@ -9,9 +9,6 @@ on:
 permissions:
   contents: write
 
-env:
-  RAPIDGZIP_RS_REF: split-03-rapidgzip-rs-windows-arm64
-
 jobs:
   build:
     strategy:
@@ -19,44 +16,35 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: rapidgzip-cli-linux-x86_64
-            archive: rapidgzip-cli-linux-x86_64.tar.gz
-            binary: rapidgzip-cli
+            artifact: rapidgzip-rs-cli-linux-x86_64
+            archive: rapidgzip-rs-cli-linux-x86_64.tar.gz
+            binary: rapidgzip-rs-cli
           - os: ubuntu-24.04-arm
-            artifact: rapidgzip-cli-linux-arm64
-            archive: rapidgzip-cli-linux-arm64.tar.gz
-            binary: rapidgzip-cli
+            artifact: rapidgzip-rs-cli-linux-arm64
+            archive: rapidgzip-rs-cli-linux-arm64.tar.gz
+            binary: rapidgzip-rs-cli
           - os: macos-15-intel
-            artifact: rapidgzip-cli-macos-x86_64
-            archive: rapidgzip-cli-macos-x86_64.tar.gz
-            binary: rapidgzip-cli
+            artifact: rapidgzip-rs-cli-macos-x86_64
+            archive: rapidgzip-rs-cli-macos-x86_64.tar.gz
+            binary: rapidgzip-rs-cli
           - os: macos-15
-            artifact: rapidgzip-cli-macos-arm64
-            archive: rapidgzip-cli-macos-arm64.tar.gz
-            binary: rapidgzip-cli
+            artifact: rapidgzip-rs-cli-macos-arm64
+            archive: rapidgzip-rs-cli-macos-arm64.tar.gz
+            binary: rapidgzip-rs-cli
           - os: windows-latest
-            artifact: rapidgzip-cli-windows-x86_64
-            archive: rapidgzip-cli-windows-x86_64.zip
-            binary: rapidgzip-cli.exe
+            artifact: rapidgzip-rs-cli-windows-x86_64
+            archive: rapidgzip-rs-cli-windows-x86_64.zip
+            binary: rapidgzip-rs-cli.exe
           - os: windows-11-arm
-            artifact: rapidgzip-cli-windows-arm64
-            archive: rapidgzip-cli-windows-arm64.zip
-            binary: rapidgzip-cli.exe
+            artifact: rapidgzip-rs-cli-windows-arm64
+            archive: rapidgzip-rs-cli-windows-arm64.zip
+            binary: rapidgzip-rs-cli.exe
 
     runs-on: ${{ matrix.os }}
 
     steps:
-      - name: Checkout rapidgzip-cli
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          path: rapidgzip-cli
-
-      - name: Checkout rapidgzip-rs
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/rapidgzip-rs
-          ref: ${{ env.RAPIDGZIP_RS_REF }}
-          path: rapidgzip-rs
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -75,11 +63,11 @@ jobs:
               ;;
             Windows)
               choco install -y nasm
+              echo "C:\Program Files\NASM" >> "$GITHUB_PATH"
               ;;
           esac
 
       - name: Build release binary
-        working-directory: rapidgzip-cli
         run: cargo build --release
 
       - name: Stage package contents
@@ -88,9 +76,11 @@ jobs:
           set -euxo pipefail
           rm -rf package
           mkdir -p package
-          cp "rapidgzip-cli/target/release/${{ matrix.binary }}" "package/${{ matrix.binary }}"
-          cp rapidgzip-cli/README.md package/README.md
-          cp rapidgzip-cli/SECURITY.md package/SECURITY.md
+          cp "target/release/${{ matrix.binary }}" "package/${{ matrix.binary }}"
+          cp README.md package/README.md
+          cp SECURITY.md package/SECURITY.md
+          cp LICENSE-MIT package/LICENSE-MIT
+          cp LICENSE-APACHE package/LICENSE-APACHE
 
       - name: Create tar.gz archive
         if: runner.os != 'Windows'
@@ -119,7 +109,10 @@ jobs:
         run: |
           set -euxo pipefail
           if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release create "${GITHUB_REF_NAME}"               --verify-tag               --title "${GITHUB_REF_NAME}"               --generate-notes
+            gh release create "${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --title "${GITHUB_REF_NAME}" \
+              --generate-notes
           fi
 
       - name: Upload release asset
