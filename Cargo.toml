@@ -1,6 +1,6 @@
 [package]
 name = "rapidgzip-rs-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.82"
 description = "Cross-platform command-line decompressor built on top of rapidgzip-rs"
@@ -16,7 +16,7 @@ name = "rapidgzip-rs-cli"
 path = "src/main.rs"
 
 [dependencies]
-rapidgzip = "0.1.0"
+rapidgzip = "0.1.1"
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 url = "2.5.8"

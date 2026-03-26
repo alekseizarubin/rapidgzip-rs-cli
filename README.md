@@ -10,7 +10,7 @@ over parallelism, index import/export, and native I/O strategy.
 Companion repositories:
 
 - Library: [`rapidgzip-rs`](https://github.com/alekseizarubin/rapidgzip-rs)
-- Benchmarks: [`rapidgzip-benchmarks`](https://github.com/alekseizarubin/rapidgzip-benchmarks)
+- Benchmarks: [`rapidgzip-rs-benchmarks`](https://github.com/alekseizarubin/rapidgzip-rs-benchmarks)
 
 ## Why use this
 
@@ -85,6 +85,17 @@ rapidgzip-rs-cli reads.fastq.gz --count-lines
 - stdin is spooled into a temporary file before decode because parallel decode requires a seekable input
 - HTTP input currently requires a server that provides `Content-Length` and byte-range support
 - local files, stdin, and HTTP inputs share the same CLI surface, but their I/O behavior is not identical
+
+## Platform Support
+
+Current release expectations:
+
+- Linux `x86_64` and `aarch64`: tested in CI
+- macOS `x86_64` and `aarch64`: tested in CI
+- Windows `x86_64`: tested in CI
+- Windows `aarch64`: build-verified in CI
+
+The release workflows still build cross-platform binaries for the broader target matrix.
 
 ## Build Requirements
 
