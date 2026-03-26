@@ -19,26 +19,32 @@ jobs:
             artifact: rapidgzip-rs-cli-linux-x86_64
             archive: rapidgzip-rs-cli-linux-x86_64.tar.gz
             binary: rapidgzip-rs-cli
+            raw_asset: rapidgzip-rs-cli-linux-x86_64
           - os: ubuntu-24.04-arm
             artifact: rapidgzip-rs-cli-linux-arm64
             archive: rapidgzip-rs-cli-linux-arm64.tar.gz
             binary: rapidgzip-rs-cli
+            raw_asset: rapidgzip-rs-cli-linux-arm64
           - os: macos-15-intel
             artifact: rapidgzip-rs-cli-macos-x86_64
             archive: rapidgzip-rs-cli-macos-x86_64.tar.gz
             binary: rapidgzip-rs-cli
+            raw_asset: rapidgzip-rs-cli-macos-x86_64
           - os: macos-15
             artifact: rapidgzip-rs-cli-macos-arm64
             archive: rapidgzip-rs-cli-macos-arm64.tar.gz
             binary: rapidgzip-rs-cli
+            raw_asset: rapidgzip-rs-cli-macos-arm64
           - os: windows-latest
             artifact: rapidgzip-rs-cli-windows-x86_64
             archive: rapidgzip-rs-cli-windows-x86_64.zip
             binary: rapidgzip-rs-cli.exe
+            raw_asset: rapidgzip-rs-cli-windows-x86_64.exe
           - os: windows-11-arm
             artifact: rapidgzip-rs-cli-windows-arm64
             archive: rapidgzip-rs-cli-windows-arm64.zip
             binary: rapidgzip-rs-cli.exe
+            raw_asset: rapidgzip-rs-cli-windows-arm64.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -95,11 +101,17 @@ jobs:
         run: |
           Compress-Archive -Path package/* -DestinationPath "${{ matrix.archive }}"
 
-      - name: Upload workflow artifact
+      - name: Upload archive workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.archive }}
+
+      - name: Upload raw binary workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}-raw
+          path: package/${{ matrix.binary }}
 
       - name: Ensure GitHub release exists
         if: startsWith(github.ref, 'refs/tags/v')
@@ -115,11 +127,12 @@ jobs:
               --generate-notes
           fi
 
-      - name: Upload release asset
+      - name: Upload release assets
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euxo pipefail
-          gh release upload "${GITHUB_REF_NAME}" "${{ matrix.archive }}" --clobber
+          cp "package/${{ matrix.binary }}" "${{ matrix.raw_asset }}"
+          gh release upload "${GITHUB_REF_NAME}" "${{ matrix.archive }}" "${{ matrix.raw_asset }}" --clobber
