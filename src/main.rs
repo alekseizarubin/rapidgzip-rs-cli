@@ -17,7 +17,7 @@ use http_reader::HttpReader;
 
 // GNU/Linux builds need the native wrapper archives linked explicitly in the
 // final binary so the accelerated C++ backend resolves correctly.
-#[cfg(not(target_env = "msvc"))]
+#[cfg(target_os = "linux")]
 mod native_link {
     #[link(name = "rapidgzip-capi", kind = "static", modifiers = "+whole-archive")]
     unsafe extern "C" {}

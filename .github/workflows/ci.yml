@@ -22,7 +22,7 @@ jobs:
           - os: windows-latest
             kind: test
           - os: windows-11-arm
-            kind: test
+            kind: build
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -51,4 +51,9 @@ jobs:
           esac
 
       - name: Run CLI tests
+        if: matrix.kind == 'test'
         run: cargo test
+
+      - name: Smoke build release binary
+        if: matrix.kind == 'build'
+        run: cargo build --release
