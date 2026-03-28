@@ -4,6 +4,40 @@ use std::io::{self, Read, Seek, SeekFrom};
 const MIN_FETCH_SIZE: usize = 1 * 1024 * 1024;
 const MAX_FETCH_SIZE: usize = 64 * 1024 * 1024;
 
+fn read_response_body(
+    response: ureq::http::Response<ureq::Body>,
+    expected_response_bytes: usize,
+    range_header: &str,
+    position: u64,
+) -> io::Result<Vec<u8>> {
+    let body_limit = expected_response_bytes.saturating_add(1) as u64;
+    let body = response
+        .into_body()
+        .into_with_config()
+        // ureq checks the limit before the next read, so exact-size bodies need
+        // one extra byte of headroom for the final EOF read.
+        .limit(body_limit)
+        .read_to_vec()
+        .map_err(|e| {
+            io::Error::other(format!(
+                "Failed to read HTTP response body for range {} at position {}: {}",
+                range_header, position, e
+            ))
+        })?;
+    if body.len() != expected_response_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            format!(
+                "HTTP body length mismatch for range {}: expected {} bytes, got {}",
+                range_header,
+                expected_response_bytes,
+                body.len()
+            ),
+        ));
+    }
+    Ok(body)
+}
+
 #[derive(Debug)]
 pub struct HttpReader {
     url: String,
@@ -45,12 +79,19 @@ impl HttpReader {
                 .saturating_add(self.fetch_size.saturating_sub(1) as u64),
             self.size - 1,
         );
+        let expected_response_bytes = (end_pos - self.position + 1) as usize;
         let range_header = format!("bytes={}-{}", self.position, end_pos);
 
         let resp = ureq::get(&self.url)
+            .header("Accept-Encoding", "identity")
             .header("Range", &range_header)
             .call()
-            .map_err(|e| io::Error::other(format!("HTTP request failed: {}", e)))?;
+            .map_err(|e| {
+                io::Error::other(format!(
+                    "HTTP request failed for range {} at position {}: {}",
+                    range_header, self.position, e
+                ))
+            })?;
 
         let status = resp.status().as_u16();
         if status != 206 {
@@ -63,10 +104,7 @@ impl HttpReader {
             ));
         }
 
-        let body = resp.into_body().read_to_vec().map_err(|e| {
-            io::Error::other(format!("Failed to read HTTP response body: {}", e))
-        })?;
-
+        let body = read_response_body(resp, expected_response_bytes, &range_header, self.position)?;
         self.buffer_start = self.position;
         self.buffer = body;
         Ok(())
@@ -88,6 +126,7 @@ fn parse_content_range_total<B>(resp: &ureq::http::Response<B>) -> Option<u64> {
 
 fn probe_size_and_range_support(url: &str) -> Result<u64> {
     let range_resp = ureq::get(url)
+        .header("Accept-Encoding", "identity")
         .header("Range", "bytes=0-0")
         .call()
         .context("Failed to probe HTTP range support")?;
@@ -102,6 +141,7 @@ fn probe_size_and_range_support(url: &str) -> Result<u64> {
     }
 
     let head_resp = ureq::head(url)
+        .header("Accept-Encoding", "identity")
         .call()
         .context("Failed to probe HTTP metadata with HEAD after range GET failed")?;
 
@@ -139,11 +179,17 @@ fn compute_fetch_size(chunk_size: u64, parallelism: u32) -> usize {
 fn checked_relative_seek(base: u64, offset: i64, label: &'static str) -> io::Result<u64> {
     if offset >= 0 {
         base.checked_add(offset as u64).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, format!("Seek overflow for {}", label))
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Seek overflow for {}", label),
+            )
         })
     } else {
         base.checked_sub(offset.unsigned_abs()).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, format!("Seek before start of {}", label))
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Seek before start of {}", label),
+            )
         })
     }
 }
@@ -221,7 +267,10 @@ impl rapidgzip::CloneableReadSeek for HttpReader {
 
 #[cfg(test)]
 mod tests {
-    use super::{compute_fetch_size, parse_content_range_total, HttpReader, MAX_FETCH_SIZE, MIN_FETCH_SIZE};
+    use super::{
+        compute_fetch_size, parse_content_range_total, read_response_body, HttpReader,
+        MAX_FETCH_SIZE, MIN_FETCH_SIZE,
+    };
     use std::io::{ErrorKind, Seek, SeekFrom};
 
     #[test]
@@ -288,5 +337,21 @@ mod tests {
             .body(())
             .unwrap();
         assert_eq!(parse_content_range_total(&resp), Some(12345));
+    }
+
+    #[test]
+    fn large_http_range_reads_are_not_limited_by_ureq_default_cap() {
+        let data = (0..(11 * 1024 * 1024 + 17))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        let response = ureq::http::Response::builder()
+            .status(206)
+            .header("Content-Length", data.len().to_string())
+            .body(ureq::Body::builder().data(data.clone()))
+            .unwrap();
+
+        let body = read_response_body(response, data.len(), "bytes=0-11534352", 0).unwrap();
+
+        assert_eq!(body, data);
     }
 }

@@ -236,22 +236,54 @@ fn classify_input(input: &str) -> InputKind {
     InputKind::LocalPath(PathBuf::from(input))
 }
 
+fn resolved_parallelism(requested_parallelism: u32) -> u32 {
+    if requested_parallelism == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get() as u32)
+            .unwrap_or(1)
+    } else {
+        requested_parallelism
+    }
+}
+
+fn should_force_sequential_for_url_no_index(cli: &Cli, input_kind: &InputKind) -> bool {
+    matches!(input_kind, InputKind::Url)
+        && cli.import_index.is_none()
+        && cli.io_read_mode == IoReadModeArg::Auto
+}
+
+fn resolve_io_read_mode(cli: &Cli, input_kind: &InputKind) -> IoReadModeArg {
+    if should_force_sequential_for_url_no_index(cli, input_kind) {
+        IoReadModeArg::Sequential
+    } else {
+        cli.io_read_mode
+    }
+}
+
 fn infer_output_path(path: &Path) -> Result<PathBuf> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("Could not derive output path from input name. Pass --output <PATH> or --stdout"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not derive output path from input name. Pass --output <PATH> or --stdout"
+            )
+        })?;
 
     let stripped = if let Some(stripped) = file_name.strip_suffix(".gz") {
         stripped
     } else if let Some(stripped) = file_name.strip_suffix(".bgz") {
         stripped
     } else {
-        anyhow::bail!("Could not derive output path from input name. Pass --output <PATH> or --stdout");
+        anyhow::bail!(
+            "Could not derive output path from input name. Pass --output <PATH> or --stdout"
+        );
     };
 
     if stripped.is_empty() {
-        anyhow::bail!("Could not derive output path from input name. Pass --output <PATH> or --stdout");
+        anyhow::bail!(
+            "Could not derive output path from input name. Pass --output <PATH> or --stdout"
+        );
     }
 
     Ok(path.with_file_name(stripped))
@@ -273,7 +305,9 @@ fn resolve_output_target(cli: &Cli, input_kind: &InputKind) -> Result<OutputTarg
     match input_kind {
         InputKind::LocalPath(path) => Ok(OutputTarget::File(infer_output_path(path)?)),
         InputKind::Url | InputKind::Stdin => {
-            anyhow::bail!("This input has no safe default output path. Pass --output <PATH> or --stdout");
+            anyhow::bail!(
+                "This input has no safe default output path. Pass --output <PATH> or --stdout"
+            );
         }
     }
 }
@@ -320,9 +354,10 @@ fn open_input(cli: &Cli, builder: &ReaderBuilder, input_kind: &InputKind) -> Res
         }
         InputKind::Url => {
             log_info(cli, format!(">> Opening URL: {}", cli.input));
-            let http_reader = HttpReader::new(cli.input.clone(), cli.chunk_size, cli.parallelism).context(
-                "Failed to initialize HTTP range reader. Ensure the server supports Content-Length and Range requests.",
-            )?;
+            let http_reader = HttpReader::new(cli.input.clone(), cli.chunk_size, cli.parallelism)
+                .context(
+                    "Failed to initialize HTTP range reader. Ensure the server supports Content-Length and Range requests.",
+                )?;
             builder
                 .open_cloneable_reader(http_reader)
                 .map(InputReader::from_reader)
@@ -410,12 +445,34 @@ fn main() -> Result<()> {
     let start_time = Instant::now();
 
     let input_kind = classify_input(&cli.input);
+    let effective_io_read_mode = resolve_io_read_mode(&cli, &input_kind);
+    let effective_parallelism = resolved_parallelism(cli.parallelism);
     let output_target = resolve_output_target(&cli, &input_kind)?;
+
+    if should_force_sequential_for_url_no_index(&cli, &input_kind) {
+        log_info(
+            &cli,
+            ">> URL input without an imported index uses sequential buffered reads to avoid redundant HTTP range requests.",
+        );
+    }
+    if matches!(input_kind, InputKind::Url)
+        && cli.import_index.is_none()
+        && effective_io_read_mode == IoReadModeArg::Sequential
+        && effective_parallelism > 1
+    {
+        log_info(
+            &cli,
+            format!(
+                ">> Warning: sequential URL decoding with parallelism {} retains more compressed input in memory for correctness. Memory usage may be significant; prefer -P 1 or import an index if needed.",
+                effective_parallelism
+            ),
+        );
+    }
 
     let mut builder = ReaderBuilder::new()
         .parallelism(cli.parallelism)
         .chunk_size(cli.chunk_size)
-        .io_read_mode(cli.io_read_mode.into());
+        .io_read_mode(effective_io_read_mode.into());
 
     match cli.keep_index {
         KeepIndexMode::Auto => {
@@ -434,8 +491,12 @@ fn main() -> Result<()> {
     log_verbose(
         &cli,
         format!(
-            ">> Builder config: parallelism={}, chunk_size={}, io_read_mode={:?}, keep_index={:?}",
-            cli.parallelism, cli.chunk_size, cli.io_read_mode, cli.keep_index
+            ">> Builder config: parallelism={}, chunk_size={}, requested_io_read_mode={:?}, effective_io_read_mode={:?}, keep_index={:?}",
+            cli.parallelism,
+            cli.chunk_size,
+            cli.io_read_mode,
+            effective_io_read_mode,
+            cli.keep_index
         ),
     );
 
@@ -507,7 +568,10 @@ fn main() -> Result<()> {
         }
         println!("{}", line_count);
     } else if cli.benchmark_only {
-        log_info(&cli, ">> Decompressing (benchmark-only mode: data will be discarded)...");
+        log_info(
+            &cli,
+            ">> Decompressing (benchmark-only mode: data will be discarded)...",
+        );
         loop {
             if is_cancelled() {
                 break;
@@ -636,7 +700,10 @@ fn main() -> Result<()> {
     }
 
     if is_cancelled() {
-        log_info(&cli, ">> Operation cancelled. Temporary output will be discarded.");
+        log_info(
+            &cli,
+            ">> Operation cancelled. Temporary output will be discarded.",
+        );
         std::process::exit(1);
     }
 
@@ -663,8 +730,9 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_input, infer_output_path, open_seekable_stream, resolve_output_target,
-        spool_stream_to_temp_file, Cli, InputKind, IoReadModeArg, KeepIndexMode, OutputTarget,
+        classify_input, infer_output_path, open_seekable_stream, resolve_io_read_mode,
+        resolve_output_target, should_force_sequential_for_url_no_index, spool_stream_to_temp_file,
+        Cli, InputKind, IoReadModeArg, KeepIndexMode, OutputTarget,
     };
     use clap::Parser;
     use flate2::write::GzEncoder;
@@ -727,6 +795,36 @@ mod tests {
     }
 
     #[test]
+    fn url_without_index_forces_sequential_only_in_auto_mode() {
+        let auto_cli =
+            Cli::try_parse_from(["rapidgzip-rs-cli", "https://example.org/a.gz"]).unwrap();
+        let explicit_cli = Cli::try_parse_from([
+            "rapidgzip-rs-cli",
+            "https://example.org/a.gz",
+            "--io-read-mode",
+            "pread",
+        ])
+        .unwrap();
+
+        assert!(should_force_sequential_for_url_no_index(
+            &auto_cli,
+            &InputKind::Url
+        ));
+        assert_eq!(
+            resolve_io_read_mode(&auto_cli, &InputKind::Url),
+            IoReadModeArg::Sequential
+        );
+        assert!(!should_force_sequential_for_url_no_index(
+            &explicit_cli,
+            &InputKind::Url
+        ));
+        assert_eq!(
+            resolve_io_read_mode(&explicit_cli, &InputKind::Url),
+            IoReadModeArg::Pread
+        );
+    }
+
+    #[test]
     fn cli_accepts_compatibility_flags() {
         let cli = Cli::try_parse_from([
             "rapidgzip-rs-cli",
@@ -746,13 +844,9 @@ mod tests {
 
     #[test]
     fn cli_parses_count_modes() {
-        let cli = Cli::try_parse_from([
-            "rapidgzip-rs-cli",
-            "input.gz",
-            "--count-lines",
-            "--verbose",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["rapidgzip-rs-cli", "input.gz", "--count-lines", "--verbose"])
+                .unwrap();
 
         assert!(cli.count_lines);
         assert!(cli.verbose);
@@ -761,14 +855,23 @@ mod tests {
     #[test]
     fn classify_input_recognizes_local_url_and_stdin() {
         assert!(matches!(classify_input("-"), InputKind::Stdin));
-        assert!(matches!(classify_input("https://example.org/a.gz"), InputKind::Url));
+        assert!(matches!(
+            classify_input("https://example.org/a.gz"),
+            InputKind::Url
+        ));
         assert!(matches!(classify_input("file.gz"), InputKind::LocalPath(_)));
     }
 
     #[test]
     fn infer_output_path_strips_gzip_extensions() {
-        assert_eq!(infer_output_path(Path::new("reads.fastq.gz")).unwrap(), PathBuf::from("reads.fastq"));
-        assert_eq!(infer_output_path(Path::new("reads.fastq.bgz")).unwrap(), PathBuf::from("reads.fastq"));
+        assert_eq!(
+            infer_output_path(Path::new("reads.fastq.gz")).unwrap(),
+            PathBuf::from("reads.fastq")
+        );
+        assert_eq!(
+            infer_output_path(Path::new("reads.fastq.bgz")).unwrap(),
+            PathBuf::from("reads.fastq")
+        );
         assert!(infer_output_path(Path::new("reads.fastq")).is_err());
     }
 
@@ -777,11 +880,17 @@ mod tests {
         let stdin_cli = Cli::try_parse_from(["rapidgzip-rs-cli", "-"]).unwrap();
         assert!(resolve_output_target(&stdin_cli, &InputKind::Stdin).is_err());
 
-        let url_cli = Cli::try_parse_from(["rapidgzip-rs-cli", "https://example.org/a.gz"]).unwrap();
+        let url_cli =
+            Cli::try_parse_from(["rapidgzip-rs-cli", "https://example.org/a.gz"]).unwrap();
         assert!(resolve_output_target(&url_cli, &InputKind::Url).is_err());
 
         let file_cli = Cli::try_parse_from(["rapidgzip-rs-cli", "reads.fastq.gz"]).unwrap();
-        match resolve_output_target(&file_cli, &InputKind::LocalPath(PathBuf::from("reads.fastq.gz"))).unwrap() {
+        match resolve_output_target(
+            &file_cli,
+            &InputKind::LocalPath(PathBuf::from("reads.fastq.gz")),
+        )
+        .unwrap()
+        {
             OutputTarget::File(path) => assert_eq!(path, PathBuf::from("reads.fastq")),
             _ => panic!("expected file output target"),
         }

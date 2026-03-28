@@ -84,6 +84,8 @@ rapidgzip-rs-cli reads.fastq.gz --count-lines
 - stdin and HTTP inputs require an explicit `--output <PATH>` or `--stdout` because they have no safe default output path
 - stdin is spooled into a temporary file before decode because parallel decode requires a seekable input
 - HTTP input currently requires a server that provides `Content-Length` and byte-range support
+- HTTP input without an imported index now defaults to sequential buffered reads in `auto` mode to avoid redundant range requests
+- URL input without an imported index can use significantly more memory when `-P` resolves to more than 1 because compressed input buffering is retained for correctness; prefer `-P 1` or import an index if memory matters
 - local files, stdin, and HTTP inputs share the same CLI surface, but their I/O behavior is not identical
 
 ## Platform Support
