@@ -70,7 +70,7 @@ const FAST_PATH_READ_SIZE: usize = 256 * 1024 * 1024;
 const STREAM_BUFFER_SIZE: usize = 1024 * 1024;
 
 pub fn is_cancelled() -> bool {
-    CANCELLED.load(Ordering::Relaxed)
+    CANCELLED.load(Ordering::Acquire)
 }
 
 #[derive(Parser, Debug)]
@@ -117,9 +117,9 @@ struct Cli {
     #[arg(long)]
     export_index: Option<PathBuf>,
 
-    /// Import index from this file before reading
+    /// Import index from a local file or HTTP/HTTPS URL before reading
     #[arg(long)]
-    import_index: Option<PathBuf>,
+    import_index: Option<String>,
 
     /// Select the native compressed-input I/O strategy
     #[arg(long, value_enum, default_value_t = IoReadModeArg::Auto)]
@@ -234,6 +234,62 @@ fn classify_input(input: &str) -> InputKind {
         }
     }
     InputKind::LocalPath(PathBuf::from(input))
+}
+
+fn is_http_url(s: &str) -> bool {
+    if let Ok(url) = Url::parse(s) {
+        url.scheme() == "http" || url.scheme() == "https"
+    } else {
+        false
+    }
+}
+
+/// Downloads a URL with a plain GET request into a rewound temporary file.
+///
+/// Unlike [`HttpReader`], this does **not** require the server to support HTTP
+/// 206 Partial Content — a plain 200 OK is sufficient. Index files are always
+/// spooled in full before import, so random-access range requests are not needed.
+fn download_index_from_url(url: &str) -> Result<NamedTempFile> {
+    let agent = ureq::Agent::new_with_defaults();
+    let response = agent
+        .get(url)
+        .header("Accept-Encoding", "identity")
+        .call()
+        .with_context(|| format!("HTTP GET failed for index URL: {}", url))?;
+
+    let status = response.status().as_u16();
+    if status >= 400 {
+        anyhow::bail!("HTTP error {} when downloading index from {}", status, url);
+    }
+
+    // Raise ureq's default 10 MiB per-read cap so large index files are fully
+    // read. Use Content-Length when available; fall back to a 1 GiB hard limit.
+    let limit = response
+        .headers()
+        .get("content-length")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(1024 * 1024 * 1024)
+        .saturating_add(1); // ureq checks the cap before the final EOF read
+
+    let body = response
+        .into_body()
+        .into_with_config()
+        .limit(limit)
+        .read_to_vec()
+        .context("Failed to read index body from HTTP response")?;
+
+    let mut temp_file =
+        NamedTempFile::new().context("Failed to create temporary file for downloaded index")?;
+    temp_file
+        .as_file_mut()
+        .write_all(&body)
+        .context("Failed to write downloaded index to temp file")?;
+    temp_file
+        .as_file_mut()
+        .seek(SeekFrom::Start(0))
+        .context("Failed to rewind downloaded index temp file")?;
+    Ok(temp_file)
 }
 
 fn resolved_parallelism(requested_parallelism: u32) -> u32 {
@@ -399,7 +455,10 @@ fn prepare_output_file(path: &Path, force: bool) -> Result<PreparedOutputFile> {
     })
 }
 
-fn finalize_output_file(mut prepared: PreparedOutputFile, force: bool) -> Result<()> {
+fn finalize_output_file(
+    mut prepared: PreparedOutputFile,
+    #[cfg_attr(unix, allow(unused_variables))] force: bool,
+) -> Result<()> {
     prepared
         .temp_file
         .as_file_mut()
@@ -411,6 +470,10 @@ fn finalize_output_file(mut prepared: PreparedOutputFile, force: bool) -> Result
             )
         })?;
 
+    // On Unix, rename(2) atomically replaces the target, so remove_file is
+    // unnecessary and would introduce a TOCTOU race. On Windows, rename over
+    // an existing file fails, so we must remove it first.
+    #[cfg(not(unix))]
     if force && prepared.final_path.exists() {
         std::fs::remove_file(&prepared.final_path).with_context(|| {
             format!(
@@ -438,7 +501,7 @@ fn main() -> Result<()> {
 
     ctrlc::set_handler(move || {
         eprintln!("\n[!] Ctrl+C received. Cancelling operations...");
-        CANCELLED.store(true, Ordering::Relaxed);
+        CANCELLED.store(true, Ordering::Release);
     })
     .expect("Error setting Ctrl-C handler");
 
@@ -502,12 +565,25 @@ fn main() -> Result<()> {
 
     let mut input = open_input(&cli, &builder, &input_kind)?;
 
-    if let Some(ref index_path) = cli.import_index {
-        log_info(&cli, format!(">> Importing index from {:?}", index_path));
-        input
-            .reader
-            .import_index(index_path)
-            .with_context(|| "Failed to import index")?;
+    if let Some(ref index_source) = cli.import_index {
+        if is_http_url(index_source) {
+            log_info(
+                &cli,
+                format!(">> Downloading index from URL: {}", index_source),
+            );
+            let temp_index = download_index_from_url(index_source)
+                .with_context(|| format!("Failed to download index from {}", index_source))?;
+            input
+                .reader
+                .import_index(temp_index.path())
+                .with_context(|| "Failed to import index")?;
+        } else {
+            log_info(&cli, format!(">> Importing index from: {}", index_source));
+            input
+                .reader
+                .import_index(index_source)
+                .with_context(|| "Failed to import index")?;
+        }
     }
 
     if cli.decompress {
@@ -730,15 +806,16 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_input, infer_output_path, open_seekable_stream, resolve_io_read_mode,
-        resolve_output_target, should_force_sequential_for_url_no_index, spool_stream_to_temp_file,
-        Cli, InputKind, IoReadModeArg, KeepIndexMode, OutputTarget,
+        classify_input, download_index_from_url, infer_output_path, is_http_url,
+        open_seekable_stream, resolve_io_read_mode, resolve_output_target,
+        should_force_sequential_for_url_no_index, spool_stream_to_temp_file, Cli, InputKind,
+        IoReadModeArg, KeepIndexMode, OutputTarget,
     };
     use clap::Parser;
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use rapidgzip::ReaderBuilder;
-    use std::io::{Cursor, Read, Write};
+    use std::io::{BufRead, BufReader, Cursor, Read, Write};
     use std::path::{Path, PathBuf};
 
     fn create_test_gz() -> Vec<u8> {
@@ -850,6 +927,65 @@ mod tests {
 
         assert!(cli.count_lines);
         assert!(cli.verbose);
+    }
+
+    #[test]
+    fn is_http_url_recognizes_http_and_https_only() {
+        assert!(is_http_url("http://example.org/index.gzidx"));
+        assert!(is_http_url("https://example.org/index.gzidx"));
+        assert!(!is_http_url("/local/path/index.gzidx"));
+        assert!(!is_http_url("relative/path.gzidx"));
+        assert!(!is_http_url("ftp://example.org/index.gzidx"));
+    }
+
+    /// Minimal in-process HTTP server that serves exactly one GET request with a
+    /// plain **200 OK** response — no Range / 206 support. Returns the bound port
+    /// and a join handle so the test can wait for the server thread to finish.
+    fn serve_file_once_no_range(data: Vec<u8>) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            // Drain the HTTP request headers before sending the response.
+            let mut reader = BufReader::new(stream);
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line.trim_end_matches(['\r', '\n']).is_empty() {
+                    break;
+                }
+            }
+            let mut stream = reader.into_inner();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                data.len()
+            )
+            .unwrap();
+            stream.write_all(&data).unwrap();
+        });
+        (port, handle)
+    }
+
+    /// A server that returns 200 OK (no Range support) must be accepted when
+    /// downloading an index file via `--import-index <url>`.
+    /// This is the regression test for the bug where HttpReader was used for
+    /// index downloads and hard-required 206 Partial Content.
+    #[test]
+    fn download_index_from_http_without_range_support() {
+        let index_data: Vec<u8> = (0u8..=255).cycle().take(16 * 1024).collect();
+        let (port, server) = serve_file_once_no_range(index_data.clone());
+        let url = format!("http://127.0.0.1:{}/test.gzidx", port);
+
+        let temp_file = download_index_from_url(&url)
+            .expect("download_index_from_url must succeed for a plain 200 OK server");
+        server.join().unwrap();
+
+        let downloaded = std::fs::read(temp_file.path()).unwrap();
+        assert_eq!(
+            downloaded, index_data,
+            "downloaded bytes must match what the server sent"
+        );
     }
 
     #[test]

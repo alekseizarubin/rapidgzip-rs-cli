@@ -24,9 +24,10 @@ Compared to `gzip`, `gunzip`, or `pigz`, `rapidgzip-rs-cli` focuses on:
 ## Features
 
 - parallel decompression of local `.gz` and `.bgz` files
-- index import and export for fast repeat reads
+- index import from a local file or an HTTP/HTTPS URL (`--import-index`)
+- index export to a local file with atomic write and symlink-safe replacement
 - stdin support via temporary-file spooling for seekable decode
-- HTTP range-reader support for compatible remote inputs
+- HTTP and HTTPS input for compatible remote gzip sources
 - benchmark-only mode with native fast-path discard
 - explicit native I/O mode selection
 - explicit control over in-memory index retention
@@ -83,10 +84,32 @@ rapidgzip-rs-cli reads.fastq.gz --count-lines
 - local file inputs default to an inferred output path such as `reads.fastq.gz -> reads.fastq`
 - stdin and HTTP inputs require an explicit `--output <PATH>` or `--stdout` because they have no safe default output path
 - stdin is spooled into a temporary file before decode because parallel decode requires a seekable input
-- HTTP input currently requires a server that provides `Content-Length` and byte-range support
-- HTTP input without an imported index now defaults to sequential buffered reads in `auto` mode to avoid redundant range requests
-- URL input without an imported index can use significantly more memory when `-P` resolves to more than 1 because compressed input buffering is retained for correctness; prefer `-P 1` or import an index if memory matters
+- HTTP gzip input requires a server that provides `Content-Length` and HTTP 206 Partial Content (byte-range support)
+- `--import-index` accepts both local file paths and HTTP/HTTPS URLs; a URL index is downloaded with a plain GET request, so range support is not required on the index server
+- HTTP input without an imported index defaults to sequential buffered reads in `auto` mode to avoid redundant range requests
+- URL input without an imported index can use significantly more memory when `-P` is greater than 1; prefer `-P 1` or import an index if memory matters
 - local files, stdin, and HTTP inputs share the same CLI surface, but their I/O behavior is not identical
+
+### Web Mode Performance
+
+HTTP decompression is fully functional for both indexed and non-indexed inputs.
+Optimal throughput depends on your connection characteristics:
+
+- **Without an index** (`auto` mode): sequential reads are used automatically —
+  one continuous HTTP stream with minimal overhead. This is the recommended mode
+  for most HTTP servers.
+- **With an index**: parallel mode is enabled. Each worker issues independent HTTP
+  range requests, so more threads do not always mean higher throughput. On a
+  typical internet connection `-P 2` or `-P 4` often performs better than higher
+  counts; on high-latency links `-P 1` with `--io-read-mode sequential` is
+  frequently fastest.
+- **`--chunk-size`** controls how much data each HTTP range request fetches. For
+  slow connections a larger value (e.g. `--chunk-size 16777216`) reduces
+  per-request overhead; for fast local-network servers a smaller value improves
+  responsiveness. The default (4 MiB) is a reasonable starting point.
+
+If throughput is lower than expected, try adjusting `-P` and `--chunk-size` for
+your specific connection speed before assuming a bug.
 
 ## Platform Support
 
